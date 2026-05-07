@@ -1,90 +1,99 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import math
 
 app = FastAPI()
 
-R = 3   # radio del tanque
-V = 30  # volumen deseado
+# --- Modelos de Entrada ---
+class NewtonTanqueInput(BaseModel):
+    h_inicial: float = 2.0
+    tolerancia: float = 0.00001
+    max_iter: int = 50
 
-# Función del tanque
-def f(h):
-    return (math.pi * h**2 * (3*R - h)) / 3 - V
+class SecantePolyInput(BaseModel):
+    x0: float = -3.0
+    x1: float = -2.0
+    tolerancia: float = 0.0001
+    max_iter: int = 50
 
-# Derivada (para Newton)
-def df(h):
-    return math.pi * h * (2*R - h)
+# --- Lógica del Tanque (Newton-Raphson) ---
+def f_tanque(h):
+    # Basado en la imagen: F(h) = πh³ - 9πh² + 90
+    return (math.pi * h**3) - (9 * math.pi * h**2) + 90
 
-@app.post("/newton")
-def newton(data: dict):
-    h = data["h_inicial"]
-    tolerancia = data["tolerancia"]
-    max_iter = data["max_iter"]
+def df_tanque(h):
+    # Derivada: F'(h) = 3πh² - 18πh
+    return (3 * math.pi * h**2) - (18 * math.pi * h)
 
+# --- Lógica del Polinomio (Secante) ---
+def f_poly(x):
+    return x**3 + x + 16
+
+# --- Endpoints ---
+
+@app.post("/newton_tanque")
+def resolver_newton(data: NewtonTanqueInput):
+    x = data.h_inicial
     iteraciones = []
-
-    for i in range(max_iter):
-        if df(h) == 0:
-            return {"error": "Derivada cero"}
-
-        h_nuevo = h - f(h)/df(h)
-        error = abs(h_nuevo - h)
-
+    
+    for i in range(data.max_iter):
+        fx = f_tanque(x)
+        dfx = df_tanque(x)
+        
+        # Guardamos el estado actual antes de calcular el siguiente
+        error_res = "VERDADERO" if abs(fx) < data.tolerancia else "FALSO"
+        
         iteraciones.append({
-            "iteracion": i,
-            "h": h,
-            "f(h)": f(h),
-            "error": error
+            "n": f"X{i}",
+            "x": round(x, 10),
+            "fx": round(fx, 10),
+            "dfx": round(dfx, 10),
+            "error_res": error_res
         })
 
-        if error < tolerancia:
-            return {
-                "metodo": "Newton-Raphson",
-                "iteraciones": iteraciones,
-                "resultado_final": h_nuevo,
-                "mensaje": "Altura óptima del agua en el tanque"
-            }
+        if abs(fx) < data.tolerancia:
+            break
+            
+        if abs(dfx) < 1e-12:
+            raise HTTPException(status_code=400, detail="Derivada cero")
+            
+        x = x - fx / dfx
 
-        h = h_nuevo
+    return {"metodo": "Newton-Raphson", "iteraciones": iteraciones}
 
-    return {"mensaje": "No convergió"}
-
-
-@app.post("/secante")
-def secante(data: dict):
-    h0 = data["h0"]
-    h1 = data["h1"]
-    tolerancia = data["tolerancia"]
-    max_iter = data["max_iter"]
-
+@app.post("/secante_poly")
+def resolver_secante(data: SecantePolyInput):
+    x0, x1 = data.x0, data.x1
     iteraciones = []
-
-    for i in range(max_iter):
-        if (f(h1) - f(h0)) == 0:
-            return {"error": "División por cero"}
-
-        h2 = h1 - f(h1)*(h1 - h0)/(f(h1) - f(h0))
-        error = abs(h2 - h1)
-
+    
+    # La primera iteración según tu imagen muestra los puntos iniciales
+    for i in range(data.max_iter):
+        f0 = f_poly(x0)
+        f1 = f_poly(x1)
+        
+        if abs(f1 - f0) < 1e-12: break
+        
+        x_next = x1 - (f1 * (x1 - x0)) / (f1 - f0)
+        
+        # Error relativo porcentual (como en la imagen de la secante)
+        error = abs((x_next - x1) / x_next) * 100 if x_next != 0 else 0
+        
         iteraciones.append({
-            "iteracion": i,
-            "h": h1,
-            "f(h)": f(h1),
-            "error": error
+            "n": i + 1,
+            "xi_1": round(x0, 4),
+            "xi": round(x1, 4),
+            "f_xi": round(f1, 4),
+            "x_next": round(x_next, 4),
+            "error_pct": f"{round(error, 2)}%"
         })
 
-        if error < tolerancia:
-            return {
-                "metodo": "Secante",
-                "iteraciones": iteraciones,
-                "resultado_final": h2,
-                "mensaje": "Altura óptima del agua en el tanque"
-            }
+        if error < data.tolerancia * 100:
+            break
+            
+        x0, x1 = x1, x_next
 
-        h0 = h1
-        h1 = h2
-
-    return {"mensaje": "No convergió"}
+    return {"metodo": "Secante", "iteraciones": iteraciones}
 
 @app.get("/")
-def inicio():
-    return {"mensaje": "API de métodos numéricos aplicada a la agricultura"}
+def health_check():
+    return {"status": "ready", "msg": "Lógica de Newton y Secante acoplada"}
